@@ -6,6 +6,8 @@ import "../dependencies/openzeppelin/contracts/SafeMath.sol";
 import "../dependencies/openzeppelin/contracts/IERC20.sol";
 import "../dependencies/openzeppelin/contracts/Ownable.sol";
 import "../interfaces/IChefIncentivesController.sol";
+import "../interfaces/IChainlinkAggregator.sol";
+import "../interfaces/IExampleOracleSimple.sol";
 
 interface IUniswapLPToken {
     function getReserves()
@@ -23,6 +25,8 @@ interface IUniswapLPToken {
         address to,
         uint256 value
     ) external returns (bool);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
 }
 
 interface IMultiFeeDistribution {
@@ -31,30 +35,35 @@ interface IMultiFeeDistribution {
 }
 
 contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
-
     using SafeMath for uint256;
 
-    IUniswapLPToken constant public lpToken = IUniswapLPToken(0x21EFFCCB384fC8996D8b1df5D9Ba1f9732efaa18);
-    IERC20 public constant sFTM = IERC20(0x21be370D5312f44cB42ce377BC9b8a0cEF1A4C83);
-    IMultiFeeDistribution constant public treasury = IMultiFeeDistribution(0x7c32f68811C7de69fB3C26E0ED47b823fBDcF795);
-    address constant public burn = 0xA17bAcf997Ca7e4CAA15E3E409838B970bEBD55F;
+    IChainlinkAggregator constant public chainlinkBNB = IChainlinkAggregator(0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE);
+    IUniswapLPToken constant public lpToken = IUniswapLPToken(0xca6C8AbF738083b8Fa94708dC84E67E0140668c3);
+    IERC20 public constant sBNB = IERC20(0x5A9397ef9e7bf71aaCb252D6269f3970C406cd77);
+    address public constant sculptor = 0xD33821A398A27170baF8B580ef2093c35a7a500E;
+    IMultiFeeDistribution constant public treasury = IMultiFeeDistribution(0xf7720bbC7512835B1429e69427f596b00e92CF70);
+    address constant public burn = 0x1b927c7FB03da8274e2fADA7536a4F34E4D52c61; // burn lp address
+    IExampleOracleSimple public oracle = IExampleOracleSimple(0xaBcD5677aDfEBA8e1b28235E040d061Da32eBDF2);
 
     struct UserRecord {
         uint256 nextClaimTime;
         uint256 claimCount;
-        uint256 totalBoughtFTM;
+        uint256 totalBoughtBNB;
     }
 
     mapping (address => UserRecord) public userData;
 
-    uint public totalSoldFTM;
+    uint public totalSoldBNB;
     uint public minBuyAmount;
     uint public minSuperPODLLock;
     uint public buyCooldown;
     uint public superPODLCooldown;
     uint public lockedBalanceMultiplier;
 
-    event SoldFTM(
+    uint256 public lpPrice;
+    address public admin;
+
+    event SoldBNB(
         address indexed buyer,
         uint256 amount
     );
@@ -82,6 +91,14 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
         _;
     }
 
+    /**
+     * @notice Checks if the msg.sender is the admin address
+     */
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "admin: wut?");
+        _;
+    }
+
     function setParams(
         uint256 _lockMultiplier,
         uint256 _minBuy,
@@ -97,21 +114,21 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
         superPODLCooldown = _podlCooldown;
     }
 
-    function protocolOwnedReserves() public view returns (uint256 wftm, uint256 sculpt) {
+    function protocolOwnedReserves() public view returns (uint256 wbnb, uint256 sculpt) {
         (uint reserve0, uint reserve1,) = lpToken.getReserves();
         uint balance = lpToken.balanceOf(burn);
         uint totalSupply = lpToken.totalSupply();
         return (reserve0.mul(balance).div(totalSupply), reserve1.mul(balance).div(totalSupply));
     }
 
-    function availableFTM() public view returns (uint256) {
-        return sFTM.balanceOf(address(this)) / 2;
+    function availableBNB() public view returns (uint256) {
+        return sBNB.balanceOf(address(this)) / 2;
     }
 
     function availableForUser(address _user) public view returns (uint256) {
         UserRecord storage u = userData[_user];
         if (u.nextClaimTime > block.timestamp) return 0;
-        uint available = availableFTM();
+        uint available = availableBNB();
         uint userLocked = treasury.lockedBalances(_user);
         uint totalLocked = treasury.lockedSupply();
         uint amount = available.mul(lockedBalanceMultiplier).mul(userLocked).div(totalLocked);
@@ -121,10 +138,34 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
         return amount;
     }
 
-    function lpTokensPerOneFTM() public view returns (uint256) {
+    function update() external onlyAdmin {
+        // update oracle
+        oracle.update();
+        lpPrice = _lpPrice();
+    }
+
+    function lpTokensPerOneBNB() public view returns (uint256) {
+        uint256 value = lpPrice.mul(1e18).div(_chainlinkPrice());
+        return value;
+    }
+
+    function _lpPrice() internal view returns (uint256) {
         uint totalSupply = lpToken.totalSupply();
-        (uint reserve0,,) = lpToken.getReserves();
-        return totalSupply.mul(1e18).mul(45).div(reserve0).div(100);
+        (uint256 Res0, uint256 Res1,) = lpToken.getReserves();
+        (uint256 sculptReserve, uint256 bnbReserve) = lpToken.token0() == sculptor ? (Res0, Res1) : (Res1, Res0); 
+        uint256 sculptPerBnb = oracle.consult(sculptor, 1e18);
+        // reserve value
+        uint256 sculptValue = sculptReserve.mul(sculptPerBnb).mul(_chainlinkPrice()).div(1e36);
+        uint256 bnbValue = bnbReserve.mul(_chainlinkPrice()).div(1e18);
+        // lp price
+        uint256 lpPrice = (bnbValue.add(sculptValue)).mul(1e18).div(totalSupply);
+        return lpPrice;
+    }
+
+    function _chainlinkPrice() internal view returns (uint256) {
+        int256 ans = chainlinkBNB.latestAnswer();
+        uint256 price = uint256(ans).mul(1e10);
+        return price;
     }
 
     function _buy(uint _amount, uint _cooldownTime) internal {
@@ -135,18 +176,18 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
 
         u.nextClaimTime = block.timestamp.add(_cooldownTime);
         u.claimCount = u.claimCount.add(1);
-        u.totalBoughtFTM = u.totalBoughtFTM.add(_amount);
-        totalSoldFTM = totalSoldFTM.add(_amount);
+        u.totalBoughtBNB = u.totalBoughtBNB.add(_amount);
+        totalSoldBNB = totalSoldBNB.add(_amount);
 
-        uint lpAmount = _amount.mul(lpTokensPerOneFTM()).div(1e18);
+        uint lpAmount = _amount.mul(lpTokensPerOneBNB()).div(1e18);
         lpToken.transferFrom(msg.sender, burn, lpAmount);
-        sFTM.transfer(msg.sender, _amount);
-        sFTM.transfer(address(treasury), _amount);
+        sBNB.transfer(msg.sender, _amount);
+        sBNB.transfer(address(treasury), _amount);
 
-        emit SoldFTM(msg.sender, _amount);
+        emit SoldBNB(msg.sender, _amount);
     }
 
-    function buyFTM(uint256 _amount) public notContract {
+    function buyBNB(uint256 _amount) public notContract {
         require(_amount <= availableForUser(msg.sender), "Amount exceeds user limit");
         _buy(_amount, buyCooldown);
     }
@@ -168,4 +209,17 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
         }
         return size > 0;
     }
+
+     /**
+     * @notice Sets admin address
+     * @dev Only callable by the contract owner.
+     */
+    function setAdmin(address _admin) external onlyOwner {
+        require(_admin != address(0), "Cannot be zero address");
+        admin = _admin;
+        emit AdminSet(_admin);
+    }
+
+    event AdminSet(address admin);
+    // event UpdatedPrice(uint256 twap, uint256 cumulate, uint256 diffTime, uint256 oldPrice);
 }

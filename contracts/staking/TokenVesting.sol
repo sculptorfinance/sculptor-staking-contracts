@@ -7,7 +7,8 @@ contract TokenVesting {
     using SafeMath for uint256;
 
     uint256 public startTime;
-    uint256 public constant duration = 86400 * 365; // 1 years
+    uint256 public immutable duration;
+    uint256 public immutable lockDuration;
     uint256 public immutable maxMintableTokens;
     uint256 public mintedTokens;
     IMultiFeeDistribution public immutable minter;
@@ -24,7 +25,9 @@ contract TokenVesting {
         IMultiFeeDistribution _minter,
         uint256 _maxMintable,
         address[] memory _receivers,
-        uint256[] memory _amounts
+        uint256[] memory _amounts,
+        uint256 _duration,
+        uint256 _lockDuration
     ) {
         require(_receivers.length == _amounts.length);
         minter = _minter;
@@ -36,17 +39,19 @@ contract TokenVesting {
         }
         require(mintable == _maxMintable);
         maxMintableTokens = mintable;
+        duration = _duration;
+        lockDuration = _lockDuration;
         owner = msg.sender;
     }
 
     function start() external {
         require(msg.sender == owner);
         require(startTime == 0);
-        startTime = block.timestamp;
+        startTime = block.timestamp.add(lockDuration);
     }
 
     function claimable(address _claimer) external view returns (uint256) {
-        if (startTime == 0) return 0;
+        if (startTime == 0 || startTime > block.timestamp) return 0;
         Vest storage v = vests[_claimer];
         uint256 elapsedTime = block.timestamp.sub(startTime);
         if (elapsedTime > duration) elapsedTime = duration;
@@ -55,7 +60,8 @@ contract TokenVesting {
     }
 
     function claim(address _receiver) external {
-        require(startTime != 0);
+        require(startTime != 0, "Not started yet!");
+        require(startTime <= block.timestamp, "Still locked!");
         Vest storage v = vests[msg.sender];
         uint256 elapsedTime = block.timestamp.sub(startTime);
         if (elapsedTime > duration) elapsedTime = duration;

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: NONE
 pragma solidity 0.7.6;
 pragma abicoder v2;
 
@@ -81,8 +80,8 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
     constructor(address _stakingToken) Ownable() {
         stakingToken = IMintableToken(_stakingToken);
         IMintableToken(_stakingToken).setMinter(address(this));
-        // 5% for initial + IAO
-        IMintableToken(_stakingToken).mint(msg.sender, 30_000_000 * 1e18);
+        // 3.5% for initial + 15% MKT + 10% LOCKDROP
+        IMintableToken(_stakingToken).mint(msg.sender, 28_500_000 * 1e18);
         // First reward MUST be the staking token or things will break
         // related to the 50% penalty and distribution to locked balances
         rewardTokens.push(_stakingToken);
@@ -283,7 +282,7 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
     // Minted tokens receive rewards normally but incur a 50% penalty when
     // withdrawn before lockDuration has passed.
     function mint(address user, uint256 amount, bool withPenalty) external override updateReward(user) {
-        require(minters[msg.sender]);
+        require(minters[msg.sender], "Only minter!");
         if (amount == 0) return;
         totalSupply = totalSupply.add(amount);
         Balances storage bal = balances[user];
@@ -304,6 +303,28 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
             }
         } else {
             bal.unlocked = bal.unlocked.add(amount);
+        }
+        stakingToken.mint(address(this), amount);
+        emit Staked(user, amount);
+    }
+
+    // Stake tokens to receive rewards
+    // Locked tokens cannot be withdrawn for lockDuration and are eligible to receive stakingReward rewards
+    function mintLock(address user, uint256 amount) external override nonReentrant updateReward(user) {
+        require(minters[msg.sender], "Only minter!");
+        if (amount == 0) return;
+        totalSupply = totalSupply.add(amount);
+        Balances storage bal = balances[user];
+        bal.total = bal.total.add(amount);
+        // locked token
+        lockedSupply = lockedSupply.add(amount);
+        bal.locked = bal.locked.add(amount);
+        uint256 unlockTime = block.timestamp.div(rewardsDuration).mul(rewardsDuration).add(lockDuration);
+        uint256 idx = userLocks[user].length;
+        if (idx == 0 || userLocks[user][idx-1].unlockTime < unlockTime) {
+            userLocks[user].push(LockedBalance({amount: amount, unlockTime: unlockTime}));
+        } else {
+            userLocks[user][idx-1].amount = userLocks[user][idx-1].amount.add(amount);
         }
         stakingToken.mint(address(this), amount);
         emit Staked(user, amount);
@@ -358,7 +379,7 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
     }
 
     // Claim all pending staking rewards
-    function getReward() public nonReentrant updateReward(msg.sender) {
+    function getReward() public override updateReward(msg.sender) {
         for (uint i; i < rewardTokens.length; i++) {
             address token = rewardTokens[i];
             uint256 reward = rewards[msg.sender][token];
@@ -383,7 +404,7 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
     }
 
     // Withdraw full unlocked balance and claim pending rewards
-    function exit() external updateReward(msg.sender) {
+    function exit() external override nonReentrant updateReward(msg.sender) {
         (uint256 amount, uint256 penaltyAmount) = withdrawableBalance(msg.sender);
         delete userEarnings[msg.sender];
         Balances storage bal = balances[msg.sender];
@@ -400,7 +421,7 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
     }
 
     // Withdraw all currently locked tokens where the unlock time has passed
-    function withdrawExpiredLocks() external updateReward(msg.sender) {
+    function withdrawExpiredLocks() external override nonReentrant updateReward(msg.sender) {
         LockedBalance[] storage locks = userLocks[msg.sender];
         Balances storage bal = balances[msg.sender];
         uint256 amount;

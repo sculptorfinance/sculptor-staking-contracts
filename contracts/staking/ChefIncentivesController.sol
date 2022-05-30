@@ -243,7 +243,7 @@ contract ChefIncentivesController is Ownable {
         user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(1e12);
         pool.totalSupply = _totalSupply;
         if (pool.onwardIncentives != IOnwardIncentivesController(0)) {
-            pool.onwardIncentives.handleAction(msg.sender, _user, _balance, _totalSupply);
+            pool.onwardIncentives.handleAction(_user, _balance, _totalSupply);
         }
         emit BalanceUpdated(msg.sender, _user, _balance, _totalSupply);
     }

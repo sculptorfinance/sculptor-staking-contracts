@@ -25,7 +25,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     struct PoolInfo {
         uint256 allocPoint; // How many allocation points assigned to this pool.
         uint256 lastRewardTime; // Last second that reward distribution occurs.
-        uint256 accRewardPerShare; // Accumulated rewards per share, times 1e12. See below.
+        uint256 accRewardPerShare; // Accumulated rewards per share, times ACC_SHARE_PRECISION. See below.
         IOnwardIncentivesController onwardIncentives;
     }
     // Info about token emissions for a given time period.
@@ -55,6 +55,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
     uint256 public totalAllocPoint = 0;
     // The block number when reward mining starts.
     uint256 public startTime;
+    // accurrate share pricision
+    uint256 public constant ACC_SHARE_PRECISION = 1e18;
 
     // account earning rewards => receiver of rewards for this account
     // if receiver is set to address(0), rewards are paid to the earner
@@ -138,22 +140,11 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint256 _totalAllocPoint = totalAllocPoint;
         for (uint256 i = 0; i < _tokens.length; i++) {
             PoolInfo storage pool = poolInfo[_tokens[i]];
-            require(pool.lastRewardTime > 0);
+            require(pool.lastRewardTime > 0, "token invalid!");
             _totalAllocPoint = _totalAllocPoint.sub(pool.allocPoint).add(_allocPoints[i]);
             pool.allocPoint = _allocPoints[i];
         }
         totalAllocPoint = _totalAllocPoint;
-    }
-
-    function setOnwardIncentives(
-        address _token,
-        IOnwardIncentivesController _incentives
-    )
-        external
-        onlyOwner
-    {
-        require(poolInfo[_token].lastRewardTime != 0);
-        poolInfo[_token].onwardIncentives = _incentives;
     }
 
     function setClaimReceiver(address _user, address _receiver) external {
@@ -180,9 +171,9 @@ contract MasterChef is Ownable, ReentrancyGuard {
             if (block.timestamp > pool.lastRewardTime && lpSupply != 0) {
                 uint256 duration = block.timestamp.sub(pool.lastRewardTime);
                 uint256 reward = duration.mul(rewardsPerSecond).mul(pool.allocPoint).div(totalAllocPoint);
-                accRewardPerShare = accRewardPerShare.add(reward.mul(1e12).div(lpSupply));
+                accRewardPerShare = accRewardPerShare.add(reward.mul(ACC_SHARE_PRECISION).div(lpSupply));
             }
-            claimable[i] = user.amount.mul(accRewardPerShare).div(1e12).sub(user.rewardDebt);
+            claimable[i] = user.amount.mul(accRewardPerShare).div(ACC_SHARE_PRECISION).sub(user.rewardDebt);
         }
         return claimable;
     }
@@ -222,7 +213,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint256 duration = block.timestamp.sub(pool.lastRewardTime);
         if(_totalAllocPoint != 0){
           uint256 reward = duration.mul(rewardsPerSecond).mul(pool.allocPoint).div(_totalAllocPoint);
-          pool.accRewardPerShare = pool.accRewardPerShare.add(reward.mul(1e12).div(lpSupply));
+          pool.accRewardPerShare = pool.accRewardPerShare.add(reward.mul(ACC_SHARE_PRECISION).div(lpSupply));
           pool.lastRewardTime = block.timestamp;
         }
 
@@ -245,28 +236,30 @@ contract MasterChef is Ownable, ReentrancyGuard {
     // Deposit LP tokens into the contract. Also triggers a claim.
     function deposit(address _token, uint256 _amount) external nonReentrant {
         PoolInfo storage pool = poolInfo[_token];
-        require(pool.lastRewardTime > 0);
+        require(pool.lastRewardTime > 0, "token invalid!");
         UserInfo storage user = userInfo[_token][msg.sender];
         _updateEmissions();
         _updatePool(_token, totalAllocPoint);
-        if (user.amount > 0) {
-            uint256 pending =
-                user.amount.mul(pool.accRewardPerShare).div(1e12).sub(
-                    user.rewardDebt
-                );
-            _mint(msg.sender, pending);
-        }
+        // suppoet fot token
+        uint256 balanceBefore = IERC20(_token).balanceOf(address(this)); 
         IERC20(_token).safeTransferFrom(
             address(msg.sender),
             address(this),
             _amount
         );
+        _amount = IERC20(_token).balanceOf(address(this)).sub(balanceBefore);
+        // update user info
         user.amount = user.amount.add(_amount);
-        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(1e12);
-        if (pool.onwardIncentives != IOnwardIncentivesController(0)) {
-            uint256 lpSupply = IERC20(_token).balanceOf(address(this));
-            pool.onwardIncentives.handleAction(_token, msg.sender, user.amount, lpSupply);
+        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION);
+
+        if (user.amount > 0) {
+            uint256 pending =
+                user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION).sub(
+                    user.rewardDebt
+                );
+            _mint(msg.sender, pending);
         }
+        
         emit Deposit(_token, msg.sender, _amount);
 
     }
@@ -274,56 +267,52 @@ contract MasterChef is Ownable, ReentrancyGuard {
     // Withdraw LP tokens. Also triggers a claim.
     function withdraw(address _token, uint256 _amount) external nonReentrant {
         PoolInfo storage pool = poolInfo[_token];
-        require(pool.lastRewardTime > 0);
+        require(pool.lastRewardTime > 0, "token invalid!");
         UserInfo storage user = userInfo[_token][msg.sender];
         require(user.amount >= _amount, "withdraw: not good");
         _updateEmissions();
         _updatePool(_token, totalAllocPoint);
+         // update user info
+        user.amount = user.amount.sub(_amount);
+        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION);
+
         uint256 pending =
-            user.amount.mul(pool.accRewardPerShare).div(1e12).sub(
+            user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION).sub(
                 user.rewardDebt
             );
         _mint(msg.sender, pending);
-        user.amount = user.amount.sub(_amount);
-        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(1e12);
-        IERC20(_token).safeTransfer(address(msg.sender), _amount);
-        if (pool.onwardIncentives != IOnwardIncentivesController(0)) {
-            uint256 lpSupply = IERC20(_token).balanceOf(address(this));
-            pool.onwardIncentives.handleAction(_token, msg.sender, user.amount, lpSupply);
-        }
+        IERC20(_token).safeTransfer(address(msg.sender), _amount); 
+
         emit Withdraw(_token, msg.sender, _amount);
     }
 
     // Withdraw without caring about rewards. EMERGENCY ONLY.
     function emergencyWithdraw(address _token) external nonReentrant {
         PoolInfo storage pool = poolInfo[_token];
+        require(pool.lastRewardTime > 0, "token invalid!");
         UserInfo storage user = userInfo[_token][msg.sender];
         uint256 amount = user.amount;
         user.amount = 0;
         user.rewardDebt = 0;
         IERC20(_token).safeTransfer(address(msg.sender), amount);
-        emit EmergencyWithdraw(_token, msg.sender, amount);
 
-        if (pool.onwardIncentives != IOnwardIncentivesController(0)) {
-            uint256 lpSupply = IERC20(_token).balanceOf(address(this));
-            try pool.onwardIncentives.handleAction(_token, msg.sender, 0, lpSupply) {} catch {}
-        }
+        emit EmergencyWithdraw(_token, msg.sender, amount);
     }
 
     // Claim pending rewards for one or more pools.
     // Rewards are not received directly, they are minted by the rewardMinter.
-    function claim(address _user, address[] calldata _tokens) external {
+    function claim(address _user, address[] calldata _tokens) external nonReentrant {
         _updateEmissions();
         uint256 pending;
         uint256 _totalAllocPoint = totalAllocPoint;
         require(_totalAllocPoint != 0, "Total alloc must > 0");
         for (uint i = 0; i < _tokens.length; i++) {
             PoolInfo storage pool = poolInfo[_tokens[i]];
-            require(pool.lastRewardTime > 0);
+            require(pool.lastRewardTime > 0, "token invalid!");
             _updatePool(_tokens[i], _totalAllocPoint);
             UserInfo storage user = userInfo[_tokens[i]][_user];
-            pending = pending.add(user.amount.mul(pool.accRewardPerShare).div(1e12).sub(user.rewardDebt));
-            user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(1e12);
+            pending = pending.add(user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION).sub(user.rewardDebt));
+            user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION);
         }
         _mint(_user, pending);
     }
