@@ -9,6 +9,8 @@ import "../interfaces/IChefIncentivesController.sol";
 import "../interfaces/IChainlinkAggregator.sol";
 import "../interfaces/IExampleOracleSimple.sol";
 
+import "../misc/libraries/Math.sol";
+
 interface IUniswapLPToken {
     function getReserves()
         external
@@ -42,7 +44,7 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
     IERC20 public constant sBNB = IERC20(0x5A9397ef9e7bf71aaCb252D6269f3970C406cd77);
     address public constant sculptor = 0xD33821A398A27170baF8B580ef2093c35a7a500E;
     IMultiFeeDistribution constant public treasury = IMultiFeeDistribution(0xf7720bbC7512835B1429e69427f596b00e92CF70);
-    address constant public burn = 0x1b927c7FB03da8274e2fADA7536a4F34E4D52c61; // burn lp address
+    address constant public burn = 0x1b927c7FB03da8274e2fADA7536a4F34E4D52c61; // burn lp
     IExampleOracleSimple public oracle = IExampleOracleSimple(0xaBcD5677aDfEBA8e1b28235E040d061Da32eBDF2);
 
     struct UserRecord {
@@ -60,7 +62,7 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
     uint public superPODLCooldown;
     uint public lockedBalanceMultiplier;
 
-    uint256 public lpPrice;
+    uint256 public sculptPerBnb;
     address public admin;
 
     event SoldBNB(
@@ -141,25 +143,28 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
     function update() external onlyAdmin {
         // update oracle
         oracle.update();
-        lpPrice = _lpPrice();
+        sculptPerBnb = oracle.consult(sculptor, 1e18);
     }
 
     function lpTokensPerOneBNB() public view returns (uint256) {
-        uint256 value = lpPrice.mul(1e18).div(_chainlinkPrice());
+        uint256 value = fairPriceLp().mul(1e18).div(_chainlinkPrice());
         return value;
     }
 
-    function _lpPrice() internal view returns (uint256) {
+    function fairPriceLp() public view returns (uint256) {
         uint totalSupply = lpToken.totalSupply();
         (uint256 Res0, uint256 Res1,) = lpToken.getReserves();
         (uint256 sculptReserve, uint256 bnbReserve) = lpToken.token0() == sculptor ? (Res0, Res1) : (Res1, Res0); 
-        uint256 sculptPerBnb = oracle.consult(sculptor, 1e18);
-        // reserve value
-        uint256 sculptValue = sculptReserve.mul(sculptPerBnb).mul(_chainlinkPrice()).div(1e36);
-        uint256 bnbValue = bnbReserve.mul(_chainlinkPrice()).div(1e18);
-        // lp price
-        uint256 lpPrice = (bnbValue.add(sculptValue)).mul(1e18).div(totalSupply);
-        return lpPrice;
+        // sculpt price
+        uint256 p0 = sculptPerBnb.mul(_chainlinkPrice()).div(1e18);
+        uint256 p1 =  _chainlinkPrice();
+
+        uint256 value0 = p0.mul(sculptReserve); // sculptor value
+        uint256 value1 = p1.mul(bnbReserve); // bnb value
+
+        uint256 x = Math.sqrt(value0*value1).div(totalSupply);
+        return (2 * x) ;
+
     }
 
     function _chainlinkPrice() internal view returns (uint256) {

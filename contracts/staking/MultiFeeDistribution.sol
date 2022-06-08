@@ -281,7 +281,7 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
     // Mint new tokens
     // Minted tokens receive rewards normally but incur a 50% penalty when
     // withdrawn before lockDuration has passed.
-    function mint(address user, uint256 amount, bool withPenalty) external override updateReward(user) {
+    function mint(address user, uint256 amount, bool withPenalty) external override nonReentrant updateReward(user) {
         require(minters[msg.sender], "Only minter!");
         if (amount == 0) return;
         totalSupply = totalSupply.add(amount);
@@ -379,28 +379,8 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
     }
 
     // Claim all pending staking rewards
-    function getReward() public override updateReward(msg.sender) {
-        for (uint i; i < rewardTokens.length; i++) {
-            address token = rewardTokens[i];
-            uint256 reward = rewards[msg.sender][token];
-            if (i > 0) {
-                // for rewards other than stakingToken, every 24 hours we check if new
-                // rewards were sent to the contract or accrued via aToken interest
-                uint256 balance = rewardData[token].balance;
-                if (rewardData[token].periodFinish < block.timestamp.add(rewardsDuration - 86400)) {
-                    uint256 unseen = IERC20(token).balanceOf(address(this)).sub(balance);
-                    if (unseen > 0) {
-                        _notifyReward(token, unseen);
-                        balance = balance.add(unseen);
-                    }
-                }
-                rewardData[token].balance = balance.sub(reward);
-            }
-            if (reward == 0) continue;
-            rewards[msg.sender][token] = 0;
-            IERC20(token).safeTransfer(msg.sender, reward);
-            emit RewardPaid(msg.sender, token, reward);
-        }
+    function getReward() public override nonReentrant {
+        _getReward();
     }
 
     // Withdraw full unlocked balance and claim pending rewards
@@ -417,7 +397,7 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
         if (penaltyAmount > 0) {
             _notifyReward(address(stakingToken), penaltyAmount);
         }
-        getReward();
+        _getReward();
     }
 
     // Withdraw all currently locked tokens where the unlock time has passed
@@ -444,6 +424,31 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
     }
 
     /* ========== RESTRICTED FUNCTIONS ========== */
+
+    // Claim all pending staking rewards
+    function _getReward() internal updateReward(msg.sender) {
+        for (uint i; i < rewardTokens.length; i++) {
+            address token = rewardTokens[i];
+            uint256 reward = rewards[msg.sender][token];
+            if (i > 0) {
+                // for rewards other than stakingToken, every 24 hours we check if new
+                // rewards were sent to the contract or accrued via aToken interest
+                uint256 balance = rewardData[token].balance;
+                if (rewardData[token].periodFinish < block.timestamp.add(rewardsDuration - 86400)) {
+                    uint256 unseen = IERC20(token).balanceOf(address(this)).sub(balance);
+                    if (unseen > 0) {
+                        _notifyReward(token, unseen);
+                        balance = balance.add(unseen);
+                    }
+                }
+                rewardData[token].balance = balance.sub(reward);
+            }
+            if (reward == 0) continue;
+            rewards[msg.sender][token] = 0;
+            IERC20(token).safeTransfer(msg.sender, reward);
+            emit RewardPaid(msg.sender, token, reward);
+        }
+    }
 
     function _notifyReward(address _rewardsToken, uint256 reward) internal {
         if (block.timestamp >= rewardData[_rewardsToken].periodFinish) {

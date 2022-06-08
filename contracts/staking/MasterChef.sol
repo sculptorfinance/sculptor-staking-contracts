@@ -248,10 +248,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
             _amount
         );
         _amount = IERC20(_token).balanceOf(address(this)).sub(balanceBefore);
-        // update user info
-        user.amount = user.amount.add(_amount);
-        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION);
-
+        // claim reward
         if (user.amount > 0) {
             uint256 pending =
                 user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION).sub(
@@ -259,6 +256,11 @@ contract MasterChef is Ownable, ReentrancyGuard {
                 );
             _mint(msg.sender, pending);
         }
+        // update user info
+        user.amount = user.amount.add(_amount);
+        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION);
+
+        
         
         emit Deposit(_token, msg.sender, _amount);
 
@@ -272,14 +274,15 @@ contract MasterChef is Ownable, ReentrancyGuard {
         require(user.amount >= _amount, "withdraw: not good");
         _updateEmissions();
         _updatePool(_token, totalAllocPoint);
-         // update user info
-        user.amount = user.amount.sub(_amount);
-        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION);
-
+        // pending reward
         uint256 pending =
             user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION).sub(
                 user.rewardDebt
             );
+         // update user info
+        user.amount = user.amount.sub(_amount);
+        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(ACC_SHARE_PRECISION);
+        
         _mint(msg.sender, pending);
         IERC20(_token).safeTransfer(address(msg.sender), _amount); 
 
