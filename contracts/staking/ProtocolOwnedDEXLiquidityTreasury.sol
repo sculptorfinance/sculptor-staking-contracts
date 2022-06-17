@@ -62,7 +62,7 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
     uint public superPODLCooldown;
     uint public lockedBalanceMultiplier;
 
-    uint256 public sculptPerBnb;
+    uint256 public bnbPerSculpt;
     address public admin;
 
     event SoldBNB(
@@ -81,6 +81,8 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
         uint256 _cooldown,
         uint256 _podlCooldown
     ) Ownable() {
+        IChefIncentivesController chef = IChefIncentivesController(0xd59032FD054D85C35AcF656562d85f38a773EB9E);
+        chef.setClaimReceiver(address(this), address(treasury));
         setParams(_lockMultiplier, _minBuy, _minLock, _cooldown, _podlCooldown);
     }
 
@@ -143,7 +145,8 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
     function update() external onlyAdmin {
         // update oracle
         oracle.update();
-        sculptPerBnb = oracle.consult(sculptor, 1e18);
+        // 1 sculpt per bnb
+        bnbPerSculpt = oracle.consult(sculptor, 1e18);
     }
 
     function lpTokensPerOneBNB() public view returns (uint256) {
@@ -155,8 +158,9 @@ contract ProtocolOwnedDEXLiquidityTreasury is Ownable {
         uint totalSupply = lpToken.totalSupply();
         (uint256 Res0, uint256 Res1,) = lpToken.getReserves();
         (uint256 sculptReserve, uint256 bnbReserve) = lpToken.token0() == sculptor ? (Res0, Res1) : (Res1, Res0); 
-        // sculpt price
-        uint256 p0 = sculptPerBnb.mul(_chainlinkPrice()).div(1e18);
+        // sculpt price by bnbPerSculpt * bnbPrice in usd
+        uint256 p0 = bnbPerSculpt.mul(_chainlinkPrice()).div(1e18);
+        // bnb price in usd
         uint256 p1 =  _chainlinkPrice();
 
         uint256 value0 = p0.mul(sculptReserve); // sculptor value

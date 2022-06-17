@@ -73,8 +73,6 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
     mapping(address => LockedBalance[]) private userLocks;
     mapping(address => LockedBalance[]) private userEarnings;
 
-
-
     /* ========== CONSTRUCTOR ========== */
 
     constructor(address _stakingToken) Ownable() {
@@ -345,7 +343,8 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
             require(bal.earned >= remaining, "Insufficient unlocked balance");
             bal.unlocked = 0;
             bal.earned = bal.earned.sub(remaining);
-            for (uint i = 0; ; i++) {
+            uint arrrLength = userEarnings[msg.sender].length;
+            for (uint i = 0; i < arrrLength; i++) {
                 uint256 earnedAmount = userEarnings[msg.sender][i].amount;
                 if (earnedAmount == 0) continue;
                 if (penaltyAmount == 0 && userEarnings[msg.sender][i].unlockTime > block.timestamp) {
@@ -416,6 +415,7 @@ contract MultiFeeDistribution is IMultiFeeDistribution, ReentrancyGuard, Ownable
                 delete locks[i];
             }
         }
+
         bal.locked = bal.locked.sub(amount);
         bal.total = bal.total.sub(amount);
         totalSupply = totalSupply.sub(amount);
